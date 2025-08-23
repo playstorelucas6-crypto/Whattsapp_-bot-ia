@@ -16,13 +16,28 @@ def whatsapp_reply():
     msg = resp.message()
 
     try:
+        system_prompt = """
+        Eres el asistente virtual del restaurante La Toscana.
+        Responde siempre como si fueras el negocio.
+        Aquí tienes la información oficial:
+
+        - Dirección: Calle Mayor 123, Madrid
+        - Horarios: Lunes a Viernes 13:00–23:00, Sábado y Domingo 12:00–00:00
+        - Teléfono: +34 600 123 456
+        - Reservas: Se pueden hacer por WhatsApp o llamando al teléfono.
+        - Menú: Tenemos opciones vegetarianas y sin gluten.
+
+        Responde de forma clara y breve, como un asistente de WhatsApp.
+        """
+
         completion = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Eres un asistente útil en WhatsApp."},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": incoming_msg}
             ]
         )
+
         reply = completion.choices[0].message.content
         msg.body(reply)
 
@@ -30,6 +45,7 @@ def whatsapp_reply():
         msg.body(f"Error con la IA: {str(e)}")
 
     return str(resp)
+
 
 if __name__ == "__main__":
     # En local/Codespaces funciona igual
