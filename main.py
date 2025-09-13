@@ -3,6 +3,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from openai import OpenAI
 import os
 import datetime
+import json  # 👈 añadido para leer el JSON del env var
 
 # Google Calendar
 from google.oauth2 import service_account
@@ -13,9 +14,10 @@ app = Flask(__name__)
 # Inicializamos el cliente de OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Cargar credenciales de Google Calendar
-creds = service_account.Credentials.from_service_account_file(
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"],  # Ruta al archivo JSON
+# ✅ Cargar credenciales de Google Calendar desde variable de entorno
+creds_info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
+creds = service_account.Credentials.from_service_account_info(
+    creds_info,
     scopes=["https://www.googleapis.com/auth/calendar"]
 )
 
@@ -92,7 +94,6 @@ def whatsapp_reply():
         msg.body(f"⚠️ Error: {str(e)}")
 
     return str(resp)
-
 
 
 if __name__ == "__main__":
