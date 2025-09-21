@@ -38,7 +38,7 @@ def crear_evento(nombre, telefono, fecha, hora):
         "end": {"dateTime": end_time.isoformat(), "timeZone": "Europe/Madrid"},
     }
 
-    event = service.events().insert(calendarId="primary", body=event).execute()
+    event = service.events().insert(calendarId="playstorelucas6@gmail.com", body=event).execute()
     return event.get("htmlLink")
 
 
