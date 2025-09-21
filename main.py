@@ -3,7 +3,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from openai import OpenAI
 import os
 import datetime
-import json  # 👈 añadido para leer el JSON del env var
+import json
 
 # Google Calendar
 from google.oauth2 import service_account
@@ -23,6 +23,9 @@ creds = service_account.Credentials.from_service_account_info(
 
 service = build("calendar", "v3", credentials=creds)
 
+# 🗂 Diccionario para guardar las conversaciones por número
+conversaciones = {}
+
 
 def crear_evento(nombre, telefono, fecha, hora):
     start_time = datetime.datetime.combine(fecha, hora)
@@ -39,9 +42,38 @@ def crear_evento(nombre, telefono, fecha, hora):
     return event.get("htmlLink")
 
 
+def extraer_datos_reserva(historial):
+    """
+    Llama a OpenAI para extraer número de personas, fecha, hora y nombre del historial de conversación.
+    """
+    completion = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=historial,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "reserva_schema",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "personas": {"type": "integer"},
+                        "fecha": {"type": "string", "format": "date"},
+                        "hora": {"type": "string", "format": "time"},
+                        "nombre": {"type": "string"}
+                    },
+                    "required": ["personas", "fecha", "hora", "nombre"]
+                }
+            }
+        }
+    )
+
+    datos = json.loads(completion.choices[0].message.content)
+    return datos
+
+
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
-    """Responder a mensajes de WhatsApp con OpenAI"""
+    """Responder a mensajes de WhatsApp con OpenAI y memoria de conversación"""
     incoming_msg = request.form.get("Body")
     from_number = request.form.get("From")  # Ej: whatsapp:+34600123456
 
@@ -49,46 +81,67 @@ def whatsapp_reply():
     msg = resp.message()
 
     try:
-        # Check si el usuario quiere reservar
+        # Si el usuario es nuevo, inicializamos su conversación
+        if from_number not in conversaciones:
+            conversaciones[from_number] = [
+                {"role": "system", "content": """
+                Eres el asistente virtual del restaurante La Toscana.
+                - Primero pide nº de personas, luego fecha/hora, luego nombre.
+                - No repitas preguntas ya respondidas.
+                - Cuando tengas todos los datos, confirma la reserva.
+                - Usa siempre un tono breve, claro y amable, típico de WhatsApp.
+
+                Info oficial del restaurante:
+                - Dirección: Calle Mayor 123, Madrid
+                - Horarios: Lunes a Viernes 13:00–23:00, Sábado y Domingo 12:00–00:00
+                - Teléfono: +34 600 123 456
+                - Reservas: Se pueden hacer por WhatsApp o llamando al teléfono.
+                - Menú: Tenemos opciones vegetarianas y sin gluten.
+                """}
+            ]
+
+        # Guardar lo que dice el usuario
+        conversaciones[from_number].append({"role": "user", "content": incoming_msg})
+
+        # Detectar si habla de reservar
         keywords_reserva = ["reservar", "reserva", "quiero reservar", "me gustaría reservar"]
         if any(kw in incoming_msg.lower() for kw in keywords_reserva):
-            # Crear evento con datos ficticios (puedes mejorarlo luego extrayendo fecha/hora del texto)
-            fecha = datetime.date.today() + datetime.timedelta(days=1)  # Mañana por defecto
-            hora = datetime.time(hour=20, minute=0)  # 20:00 por defecto
-            nombre = "Cliente de WhatsApp"
-            telefono = from_number.replace("whatsapp:", "")
+            # Extraemos datos de la conversación con OpenAI
+            datos = extraer_datos_reserva(conversaciones[from_number])
 
-            link_evento = crear_evento(nombre, telefono, fecha, hora)
+            try:
+                personas = datos["personas"]
+                fecha = datetime.datetime.strptime(datos["fecha"], "%Y-%m-%d").date()
+                hora = datetime.datetime.strptime(datos["hora"], "%H:%M").time()
+                nombre = datos["nombre"]
+                telefono = from_number.replace("whatsapp:", "")
 
-            msg.body(f"✅ Tu reserva ha sido registrada para mañana a las 20:00.\n"
-                     f"📅 Puedes verla aquí: {link_evento}")
+                link_evento = crear_evento(nombre, telefono, fecha, hora)
+
+                bot_reply = (f"✅ Tu reserva para {personas} personas está confirmada.\n"
+                             f"📅 Fecha: {fecha} a las {hora.strftime('%H:%M')}\n"
+                             f"👤 Nombre: {nombre}\n"
+                             f"🔗 Detalles: {link_evento}")
+
+            except Exception:
+                bot_reply = "⚠️ No pude registrar todos los datos. Por favor, dime nº de personas, fecha, hora y nombre."
+
+            conversaciones[from_number].append({"role": "assistant", "content": bot_reply})
+            msg.body(bot_reply)
             return str(resp)
 
-        # Si no es una reserva, usa OpenAI como siempre
-        system_prompt = """
-        Eres el asistente virtual del restaurante La Toscana.
-        Responde siempre como si fueras el negocio.
-        Aquí tienes la información oficial:
-
-        - Dirección: Calle Mayor 123, Madrid
-        - Horarios: Lunes a Viernes 13:00–23:00, Sábado y Domingo 12:00–00:00
-        - Teléfono: +34 600 123 456
-        - Reservas: Se pueden hacer por WhatsApp o llamando al teléfono.
-        - Menú: Tenemos opciones vegetarianas y sin gluten.
-
-        Responde de forma clara y breve, como un asistente de WhatsApp.
-        """
-
+        # 🤖 Llamar a OpenAI con todo el historial
         completion = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": incoming_msg}
-            ]
+            messages=conversaciones[from_number]
         )
 
-        reply = completion.choices[0].message.content
-        msg.body(reply)
+        bot_reply = completion.choices[0].message.content
+
+        # Guardar respuesta del bot en el historial
+        conversaciones[from_number].append({"role": "assistant", "content": bot_reply})
+
+        msg.body(bot_reply)
 
     except Exception as e:
         msg.body(f"⚠️ Error: {str(e)}")
@@ -97,7 +150,5 @@ def whatsapp_reply():
 
 
 if __name__ == "__main__":
-    # En local/Codespaces funciona igual
-    # En Render también (necesitas Procfile)
     from waitress import serve
     serve(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
