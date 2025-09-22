@@ -26,16 +26,18 @@ service = build("calendar", "v3", credentials=creds)
 # 🗂 Diccionario para guardar las conversaciones por número
 conversaciones = {}
 
+# Zona horaria para Canarias
+TIMEZONE = "Atlantic/Canary"
 
-def crear_evento(nombre, telefono, fecha, hora):
+def crear_evento(nombre, telefono, servicio, fecha, hora):
     start_time = datetime.datetime.combine(fecha, hora)
     end_time = start_time + datetime.timedelta(hours=1)
 
     event = {
-        "summary": f"Reserva de {nombre}",
-        "description": f"Reserva hecha por {nombre}, teléfono: {telefono}",
-        "start": {"dateTime": start_time.isoformat(), "timeZone": "Europe/Madrid"},
-        "end": {"dateTime": end_time.isoformat(), "timeZone": "Europe/Madrid"},
+        "summary": f"Cita de {nombre} - {servicio}",
+        "description": f"Cita para {nombre}, teléfono: {telefono}, servicio: {servicio}",
+        "start": {"dateTime": start_time.isoformat(), "timeZone": TIMEZONE},
+        "end": {"dateTime": end_time.isoformat(), "timeZone": TIMEZONE},
     }
 
     event = service.events().insert(
@@ -47,7 +49,7 @@ def crear_evento(nombre, telefono, fecha, hora):
 
 def extraer_datos_reserva(historial):
     """
-    Llama a OpenAI para extraer número de personas, fecha, hora y nombre del historial de conversación.
+    Llama a OpenAI para extraer servicio, fecha, hora y nombre del historial de conversación.
     Maneja errores de parseo JSON.
     """
     completion = client.chat.completions.create(
@@ -56,16 +58,16 @@ def extraer_datos_reserva(historial):
         response_format={
             "type": "json_schema",
             "json_schema": {
-                "name": "reserva_schema",
+                "name": "reserva_salon_schema",
                 "schema": {
                     "type": "object",
                     "properties": {
-                        "personas": {"type": "integer"},
+                        "servicio": {"type": "string"},
                         "fecha": {"type": "string", "format": "date"},
                         "hora": {"type": "string", "format": "time"},
                         "nombre": {"type": "string"}
                     },
-                    "required": ["personas", "fecha", "hora", "nombre"]
+                    "required": ["servicio", "fecha", "hora", "nombre"]
                 }
             }
         }
@@ -88,16 +90,25 @@ def whatsapp_reply():
     msg = resp.message()
 
     try:
+        # Reconocer saludos simples
+        saludos = ["hola", "buenos días", "buenas", "hey"]
+        if incoming_msg.strip().lower() in saludos:
+            bot_reply = "¡Hola! 😄 Soy tu asistente de Belleza Zen Studio. ¿Quieres reservar un servicio o necesitas información?"
+            msg.body(bot_reply)
+            return str(resp)
+
         # Si el usuario es nuevo, inicializamos su conversación
         if from_number not in conversaciones:
             conversaciones[from_number] = {
                 "historial": [
                     {"role": "system", "content": """
-                    Eres el asistente virtual del restaurante La Toscana.
-                    - Primero pide nº de personas, luego fecha/hora, luego nombre.
+                    Eres el asistente virtual del salón de belleza Belleza Zen Studio.
+                    - Primero pregunta qué servicio desea el cliente (corte, tinte, manicura, etc.).
+                    - Luego pregunta la fecha y hora de la cita.
+                    - Luego confirma el nombre del cliente.
                     - No repitas preguntas ya respondidas.
-                    - Cuando tengas todos los datos, confirma la reserva.
-                    - Usa siempre un tono breve, claro y amable, típico de WhatsApp.
+                    - Cuando tengas todos los datos, confirma la cita.
+                    - Usa un tono breve, amable y cercano, típico de WhatsApp.
                     """}
                 ],
                 "estado": "inicio"
@@ -113,15 +124,15 @@ def whatsapp_reply():
             datos = extraer_datos_reserva(conversaciones[from_number]["historial"])
             if datos:
                 try:
-                    personas = datos["personas"]
+                    servicio = datos["servicio"]
                     fecha = datetime.datetime.strptime(datos["fecha"], "%Y-%m-%d").date()
                     hora = datetime.datetime.strptime(datos["hora"], "%H:%M").time()
                     nombre = datos["nombre"]
                     telefono = from_number.replace("whatsapp:", "")
 
-                    link_evento = crear_evento(nombre, telefono, fecha, hora)
+                    link_evento = crear_evento(nombre, telefono, servicio, fecha, hora)
 
-                    bot_reply = (f"✅ Tu reserva para {personas} personas está confirmada.\n"
+                    bot_reply = (f"✅ Tu cita para {servicio} está confirmada.\n"
                                  f"📅 Fecha: {fecha} a las {hora.strftime('%H:%M')}\n"
                                  f"👤 Nombre: {nombre}\n"
                                  f"🔗 Detalles: {link_evento}")
@@ -129,10 +140,10 @@ def whatsapp_reply():
                     conversaciones[from_number]["estado"] = "reserva_confirmada"
 
                 except Exception:
-                    bot_reply = "⚠️ No pude registrar todos los datos. Por favor, dime nº de personas, fecha, hora y nombre."
+                    bot_reply = "⚠️ No pude registrar todos los datos. Por favor, dime servicio, fecha, hora y nombre."
                     conversaciones[from_number]["estado"] = "recogiendo_datos"
             else:
-                bot_reply = "👉 Necesito algunos datos para la reserva (nº de personas, fecha, hora y nombre)."
+                bot_reply = "👉 Necesito algunos datos para la cita (servicio, fecha, hora y nombre)."
                 conversaciones[from_number]["estado"] = "recogiendo_datos"
 
             conversaciones[from_number]["historial"].append({"role": "assistant", "content": bot_reply})
