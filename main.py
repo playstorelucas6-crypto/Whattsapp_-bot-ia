@@ -4,6 +4,7 @@ from openai import OpenAI
 import os
 import datetime
 import json
+import dateparser  # ✅ Para procesar fechas naturales en español
 
 # Google Calendar
 from google.oauth2 import service_account
@@ -37,6 +38,24 @@ SERVICIOS = {
     "pedicura": 60,
     "tratamiento facial": 90
 }
+
+def normalizar_fecha(texto):
+    """Convierte expresiones como 'jueves', 'mañana' en fecha ISO"""
+    dt = dateparser.parse(
+        texto,
+        languages=["es"],
+        settings={"PREFER_DATES_FROM": "future"}
+    )
+    return dt.date() if dt else None
+
+def normalizar_hora(texto):
+    """Convierte expresiones como '10am', 'por la mañana' en hora"""
+    dt = dateparser.parse(
+        texto,
+        languages=["es"],
+        settings={"PREFER_DATES_FROM": "future"}
+    )
+    return dt.time() if dt else None
 
 def crear_evento(nombre, telefono, servicio, fecha, hora):
     start_time = datetime.datetime.combine(fecha, hora)
@@ -83,8 +102,8 @@ def extraer_datos_reserva(historial):
                     "type": "object",
                     "properties": {
                         "servicio": {"type": "string"},
-                        "fecha": {"type": "string", "format": "date"},
-                        "hora": {"type": "string", "format": "time"},
+                        "fecha": {"type": "string"},
+                        "hora": {"type": "string"},
                         "nombre": {"type": "string"}
                     },
                     "required": []
@@ -98,7 +117,7 @@ def extraer_datos_reserva(historial):
         return None
 
 def detectar_intencion(mensaje):
-    """Clasifica intención del mensaje (reservar, cancelar, consultar, saludo, otro)"""
+    """Clasifica intención del mensaje"""
     completion = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
@@ -114,7 +133,7 @@ def detectar_intencion(mensaje):
                     "properties": {
                         "intencion": {
                             "type": "string",
-                            "enum": ["reservar", "cancelar", "consultar", "saludo", "otro"]
+                            "enum": ["reservar", "cancelar", "consultar", "disponibilidad", "saludo", "otro"]
                         }
                     },
                     "required": ["intencion"]
@@ -141,21 +160,32 @@ def whatsapp_reply():
         intencion = detectar_intencion(incoming_msg)
 
         if intencion == "saludo":
-            bot_reply = "¡Hola! 👋 Soy tu asistente de Belleza Zen Studio. ¿Quieres reservar, cancelar o consultar un servicio?"
-            msg.body(bot_reply)
+            msg.body("¡Hola! 👋 Soy tu asistente de Belleza Zen Studio. ¿Quieres reservar, cancelar, consultar o ver disponibilidad?")
             return str(resp)
 
         if intencion == "consultar":
-            bot_reply = "Ofrecemos estos servicios: 💇 corte (30min), 🎨 tinte (2h), 💅 manicura (45min), 🦶 pedicura (1h), ✨ tratamiento facial (1h30)."
-            msg.body(bot_reply)
+            msg.body("Ofrecemos estos servicios: 💇 corte (30min), 🎨 tinte (2h), 💅 manicura (45min), 🦶 pedicura (1h), ✨ tratamiento facial (1h30).")
             return str(resp)
 
         if intencion == "cancelar":
-            bot_reply = "Entendido 🙏. Dime la fecha y hora de la cita que quieres cancelar."
+            msg.body("Entendido 🙏. Dime la fecha y hora de la cita que quieres cancelar.")
+            return str(resp)
+
+        if intencion == "disponibilidad":
+            fecha = normalizar_fecha(incoming_msg)
+            hora = normalizar_hora(incoming_msg)
+            if fecha and hora:
+                duracion = 60
+                if hay_conflicto(fecha, hora, duracion):
+                    bot_reply = f"⚠️ El {fecha} a las {hora.strftime('%H:%M')} ya está ocupado. ¿Quieres que te sugiera otra hora?"
+                else:
+                    bot_reply = f"✅ El {fecha} a las {hora.strftime('%H:%M')} está libre. ¿Quieres reservar?"
+            else:
+                bot_reply = "📅 Dime la fecha y hora exacta que te interesa para revisar disponibilidad."
             msg.body(bot_reply)
             return str(resp)
 
-        # Nuevo usuario
+        # --- Flujo de reservas ---
         if from_number not in conversaciones:
             conversaciones[from_number] = {
                 "historial": [
@@ -180,11 +210,15 @@ def whatsapp_reply():
         datos = extraer_datos_reserva(conversaciones[from_number]["historial"])
         reservas = conversaciones[from_number]["reserva"]
 
-        # Actualizar datos
+        # Actualizar datos con normalización de fechas/horas
         if datos:
             if datos.get("servicio"): reservas["servicio"] = datos["servicio"]
-            if datos.get("fecha"): reservas["fecha"] = datos["fecha"]
-            if datos.get("hora"): reservas["hora"] = datos["hora"]
+            if datos.get("fecha"):
+                fecha_norm = normalizar_fecha(datos["fecha"])
+                if fecha_norm: reservas["fecha"] = fecha_norm.isoformat()
+            if datos.get("hora"):
+                hora_norm = normalizar_hora(datos["hora"])
+                if hora_norm: reservas["hora"] = hora_norm.strftime("%H:%M")
             if datos.get("nombre"): reservas["nombre"] = datos["nombre"]
 
         # Flujo de conversación
@@ -197,7 +231,6 @@ def whatsapp_reply():
         elif "nombre" not in reservas:
             bot_reply = "👤 ¿A nombre de quién hago la reserva?"
         elif not conversaciones[from_number]["confirmacion_pendiente"]:
-            # Confirmación previa
             bot_reply = (f"Perfecto 😊, entonces sería:\n"
                          f"- Servicio: {reservas['servicio']}\n"
                          f"- Fecha: {reservas['fecha']}\n"
@@ -207,7 +240,7 @@ def whatsapp_reply():
             conversaciones[from_number]["confirmacion_pendiente"] = True
         else:
             if incoming_msg.strip().lower() in ["sí", "si", "ok", "vale", "confirmar"]:
-                fecha = datetime.datetime.strptime(reservas["fecha"], "%Y-%m-%d").date()
+                fecha = datetime.datetime.fromisoformat(reservas["fecha"]).date()
                 hora = datetime.datetime.strptime(reservas["hora"], "%H:%M").time()
                 duracion = SERVICIOS.get(reservas["servicio"].lower(), 60)
 
