@@ -4,7 +4,7 @@ from openai import OpenAI
 import os
 import datetime
 import json
-import dateparser  # ✅ Para procesar fechas naturales en español
+import dateparser
 
 # Google Calendar
 from google.oauth2 import service_account
@@ -12,25 +12,22 @@ from googleapiclient.discovery import build
 
 app = Flask(__name__)
 
-# Inicializamos el cliente de OpenAI
+# Inicializamos OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ✅ Cargar credenciales de Google Calendar desde variable de entorno
+# Credenciales de Google Calendar
 creds_info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
 creds = service_account.Credentials.from_service_account_info(
     creds_info,
     scopes=["https://www.googleapis.com/auth/calendar"]
 )
-
 service = build("calendar", "v3", credentials=creds)
 
-# 🗂 Diccionario para guardar las conversaciones por número
+# Diccionario para guardar conversaciones por número
 conversaciones = {}
 
-# Zona horaria para Canarias
 TIMEZONE = "Atlantic/Canary"
 
-# Servicios disponibles y duración en minutos
 SERVICIOS = {
     "corte": 30,
     "tinte": 120,
@@ -39,27 +36,12 @@ SERVICIOS = {
     "tratamiento facial": 90
 }
 
-def normalizar_fecha(texto):
-    """Convierte expresiones como 'jueves', 'mañana' en fecha ISO"""
-    dt = dateparser.parse(
-        texto,
-        languages=["es"],
-        settings={"PREFER_DATES_FROM": "future"}
-    )
-    return dt.date() if dt else None
-
-def normalizar_hora(texto):
-    """Convierte expresiones como '10am', 'por la mañana' en hora"""
-    dt = dateparser.parse(
-        texto,
-        languages=["es"],
-        settings={"PREFER_DATES_FROM": "future"}
-    )
-    return dt.time() if dt else None
-
+# ---------------------------------
+# Funciones auxiliares
+# ---------------------------------
 def crear_evento(nombre, telefono, servicio, fecha, hora):
     start_time = datetime.datetime.combine(fecha, hora)
-    duracion = SERVICIOS.get(servicio.lower(), 60)  # default 1h
+    duracion = SERVICIOS.get(servicio.lower(), 60)
     end_time = start_time + datetime.timedelta(minutes=duracion)
 
     event = {
@@ -76,7 +58,6 @@ def crear_evento(nombre, telefono, servicio, fecha, hora):
     return event.get("htmlLink")
 
 def hay_conflicto(fecha, hora, duracion):
-    """Verifica si ya existe un evento en el horario solicitado"""
     start_time = datetime.datetime.combine(fecha, hora).isoformat()
     end_time = (datetime.datetime.combine(fecha, hora) + datetime.timedelta(minutes=duracion)).isoformat()
 
@@ -91,105 +72,90 @@ def hay_conflicto(fecha, hora, duracion):
     return len(eventos.get("items", [])) > 0
 
 def extraer_datos_reserva(historial):
-    completion = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=historial,
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": "reserva_salon_schema",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "servicio": {"type": "string"},
-                        "fecha": {"type": "string"},
-                        "hora": {"type": "string"},
-                        "nombre": {"type": "string"}
-                    },
-                    "required": []
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=historial,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "reserva_salon_schema",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "servicio": {"type": "string"},
+                            "fecha": {"type": "string"},
+                            "hora": {"type": "string"},
+                            "nombre": {"type": "string"}
+                        },
+                        "required": []
+                    }
                 }
             }
-        }
-    )
-    try:
+        )
         return json.loads(completion.choices[0].message.content)
     except Exception:
         return None
 
 def detectar_intencion(mensaje):
-    """Clasifica intención del mensaje"""
-    completion = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "Eres un clasificador de intenciones para un asistente de reservas en un salón de belleza. Devuelve solo una palabra."},
-            {"role": "user", "content": f"Clasifica este mensaje: {mensaje}"}
-        ],
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": "intencion_schema",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "intencion": {
-                            "type": "string",
-                            "enum": ["reservar", "cancelar", "consultar", "disponibilidad", "saludo", "otro"]
-                        }
-                    },
-                    "required": ["intencion"]
+    try:
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Eres un clasificador de intenciones para un asistente de reservas en un salón de belleza. Devuelve solo una palabra."},
+                {"role": "user", "content": f"Clasifica este mensaje: {mensaje}"}
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "intencion_schema",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "intencion": {
+                                "type": "string",
+                                "enum": ["reservar", "cancelar", "consultar", "saludo", "otro"]
+                            }
+                        },
+                        "required": ["intencion"]
+                    }
                 }
             }
-        }
-    )
-    try:
+        )
         datos = json.loads(completion.choices[0].message.content)
         return datos["intencion"]
     except:
         return "otro"
 
+def parsear_fecha_hora(fecha_str, hora_str=None):
+    """Convierte fecha y hora en datetime.date y datetime.time"""
+    fecha = dateparser.parse(fecha_str, settings={'TIMEZONE': TIMEZONE, 'RETURN_AS_TIMEZONE_AWARE': False})
+    if fecha is None:
+        return None, None
+    if hora_str:
+        try:
+            hora = datetime.datetime.strptime(hora_str, "%H:%M").time()
+        except:
+            hora = None
+    else:
+        hora = fecha.time() if fecha.time() != datetime.time(0,0) else None
+    return fecha.date(), hora
+
+# ---------------------------------
+# Ruta WhatsApp
+# ---------------------------------
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
     incoming_msg = request.form.get("Body")
     from_number = request.form.get("From")
-
     resp = MessagingResponse()
     msg = resp.message()
 
     try:
-        # Detectar intención
-        intencion = detectar_intencion(incoming_msg)
-
-        if intencion == "saludo":
-            msg.body("¡Hola! 👋 Soy tu asistente de Belleza Zen Studio. ¿Quieres reservar, cancelar, consultar o ver disponibilidad?")
-            return str(resp)
-
-        if intencion == "consultar":
-            msg.body("Ofrecemos estos servicios: 💇 corte (30min), 🎨 tinte (2h), 💅 manicura (45min), 🦶 pedicura (1h), ✨ tratamiento facial (1h30).")
-            return str(resp)
-
-        if intencion == "cancelar":
-            msg.body("Entendido 🙏. Dime la fecha y hora de la cita que quieres cancelar.")
-            return str(resp)
-
-        if intencion == "disponibilidad":
-            fecha = normalizar_fecha(incoming_msg)
-            hora = normalizar_hora(incoming_msg)
-            if fecha and hora:
-                duracion = 60
-                if hay_conflicto(fecha, hora, duracion):
-                    bot_reply = f"⚠️ El {fecha} a las {hora.strftime('%H:%M')} ya está ocupado. ¿Quieres que te sugiera otra hora?"
-                else:
-                    bot_reply = f"✅ El {fecha} a las {hora.strftime('%H:%M')} está libre. ¿Quieres reservar?"
-            else:
-                bot_reply = "📅 Dime la fecha y hora exacta que te interesa para revisar disponibilidad."
-            msg.body(bot_reply)
-            return str(resp)
-
-        # --- Flujo de reservas ---
+        # Inicializar conversación
         if from_number not in conversaciones:
             conversaciones[from_number] = {
-                "historial": [
-                    {"role": "system", "content": """
+                "historial": [{"role": "system", "content": """
                     Eres el asistente virtual del salón Belleza Zen Studio.
                     Guía al cliente paso a paso:
                     1. Pregunta qué servicio desea (muestra opciones si pide ayuda).
@@ -199,29 +165,33 @@ def whatsapp_reply():
                     - Si detectas que falta algo, pregunta solo eso.
                     - Antes de confirmar, reconfirma todos los datos.
                     - Si ya tiene una cita confirmada, ofrécele ver, cancelar o cambiar.
-                    """}
-                ],
+                """}],
                 "estado": "recogiendo_datos",
                 "reserva": {},
                 "confirmacion_pendiente": False
             }
 
         conversaciones[from_number]["historial"].append({"role": "user", "content": incoming_msg})
-        datos = extraer_datos_reserva(conversaciones[from_number]["historial"])
         reservas = conversaciones[from_number]["reserva"]
 
-        # Actualizar datos con normalización de fechas/horas
+        # -----------------------
+        # 1️⃣ Priorizar completar reserva
+        # -----------------------
+        datos = extraer_datos_reserva(conversaciones[from_number]["historial"])
         if datos:
             if datos.get("servicio"): reservas["servicio"] = datos["servicio"]
-            if datos.get("fecha"):
-                fecha_norm = normalizar_fecha(datos["fecha"])
-                if fecha_norm: reservas["fecha"] = fecha_norm.isoformat()
-            if datos.get("hora"):
-                hora_norm = normalizar_hora(datos["hora"])
-                if hora_norm: reservas["hora"] = hora_norm.strftime("%H:%M")
+            if datos.get("fecha"): reservas["fecha"] = datos["fecha"]
+            if datos.get("hora"): reservas["hora"] = datos["hora"]
             if datos.get("nombre"): reservas["nombre"] = datos["nombre"]
 
-        # Flujo de conversación
+        # Parsear fecha/hora si existen
+        fecha_parsed, hora_parsed = None, None
+        if "fecha" in reservas:
+            fecha_parsed, _ = parsear_fecha_hora(reservas["fecha"])
+        if "hora" in reservas:
+            _, hora_parsed = parsear_fecha_hora(reservas["hora"], reservas["hora"])
+
+        # Flujo de reserva
         if "servicio" not in reservas:
             bot_reply = "👉 ¿Qué servicio deseas? Opciones: corte, tinte, manicura, pedicura, tratamiento facial."
         elif "fecha" not in reservas:
@@ -240,22 +210,36 @@ def whatsapp_reply():
             conversaciones[from_number]["confirmacion_pendiente"] = True
         else:
             if incoming_msg.strip().lower() in ["sí", "si", "ok", "vale", "confirmar"]:
-                fecha = datetime.datetime.fromisoformat(reservas["fecha"]).date()
-                hora = datetime.datetime.strptime(reservas["hora"], "%H:%M").time()
-                duracion = SERVICIOS.get(reservas["servicio"].lower(), 60)
-
-                if hay_conflicto(fecha, hora, duracion):
-                    bot_reply = "⚠️ Esa hora ya está ocupada. ¿Quieres que te sugiera la más cercana disponible?"
+                if fecha_parsed and hora_parsed:
+                    duracion = SERVICIOS.get(reservas["servicio"].lower(), 60)
+                    if hay_conflicto(fecha_parsed, hora_parsed, duracion):
+                        bot_reply = "⚠️ Esa hora ya está ocupada. ¿Quieres que te sugiera la más cercana disponible?"
+                    else:
+                        link_evento = crear_evento(reservas["nombre"], from_number, reservas["servicio"], fecha_parsed, hora_parsed)
+                        bot_reply = (f"✅ Tu cita ha sido confirmada.\n"
+                                     f"📅 {fecha_parsed} a las {hora_parsed.strftime('%H:%M')}\n"
+                                     f"💇 Servicio: {reservas['servicio']}\n"
+                                     f"👤 Nombre: {reservas['nombre']}\n"
+                                     f"🔗 Detalles: {link_evento}")
+                        conversaciones[from_number]["estado"] = "reserva_confirmada"
                 else:
-                    link_evento = crear_evento(reservas["nombre"], from_number, reservas["servicio"], fecha, hora)
-                    bot_reply = (f"✅ Tu cita ha sido confirmada.\n"
-                                 f"📅 {fecha} a las {hora.strftime('%H:%M')}\n"
-                                 f"💇 Servicio: {reservas['servicio']}\n"
-                                 f"👤 Nombre: {reservas['nombre']}\n"
-                                 f"🔗 Detalles: {link_evento}")
-                    conversaciones[from_number]["estado"] = "reserva_confirmada"
+                    bot_reply = "⚠️ No pude entender la fecha o la hora. Por favor indícalas de nuevo."
             else:
                 bot_reply = "❌ Reserva cancelada. Si quieres empezamos de nuevo con otro servicio."
+
+        # -----------------------
+        # 2️⃣ Si no está completando reserva, detectar intención
+        # -----------------------
+        if reservas.get("servicio") and reservas.get("fecha") and reservas.get("hora") and reservas.get("nombre"):
+            pass  # Ya en flujo de confirmación
+        else:
+            intencion = detectar_intencion(incoming_msg)
+            if intencion == "saludo":
+                bot_reply = "¡Hola! 👋 Soy tu asistente de Belleza Zen Studio. ¿Quieres reservar, cancelar o consultar un servicio?"
+            elif intencion == "consultar":
+                bot_reply = "Ofrecemos estos servicios: 💇 corte (30min), 🎨 tinte (2h), 💅 manicura (45min), 🦶 pedicura (1h), ✨ tratamiento facial (1h30)."
+            elif intencion == "cancelar":
+                bot_reply = "Entendido 🙏. Dime la fecha y hora de la cita que quieres cancelar."
 
         conversaciones[from_number]["historial"].append({"role": "assistant", "content": bot_reply})
         msg.body(bot_reply)
@@ -264,6 +248,7 @@ def whatsapp_reply():
     except Exception as e:
         msg.body(f"⚠️ Error: {str(e)}")
         return str(resp)
+
 
 if __name__ == "__main__":
     from waitress import serve
