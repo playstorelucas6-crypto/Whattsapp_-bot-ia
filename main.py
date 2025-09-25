@@ -387,7 +387,6 @@ def whatsapp_reply():
         elif intencion == "otro":
             # Preguntas de demo: horarios de cierre, duración
             if "hora cierran" in incoming_msg.lower():
-                bot_reply = f"🏢 Hoy cerramos a las {BUSINESS_CLOSE}:00
                 elif "hora cierran" in incoming_msg.lower():
                     bot_reply = f"🏢 Hoy cerramos a las {BUSINESS_CLOSE}:00."
                 else:
